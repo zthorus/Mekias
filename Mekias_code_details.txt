@@ -1,0 +1,822 @@
+; MEKIAS (assembler inside Basic)
+; ===============================
+
+; Written by S. Morel ca. 1986
+; Reversed-engineered by himself in 2016 ;-)
+
+; Quick user guide:
+; - Mekias code is put in REM lines of BASIC
+; - Make sure there is no space char between line number and REM 
+;   (bug in ZXSP emulator introduces space chars)
+; - First line of Mekias code must be:
+;   {<ORG val in decimal>
+;   (e.g.: {30000 )
+; - Last line of Mekias code must be:
+;   }
+; - Labels for jumps and calls at current address are defined by:
+;   *<label>* 
+; - Labels can be assigned a value that is not the current address:
+;   *<label>*=<value in decimal>
+; - Comments can be appended to a line of Mekias code. They shall start with
+;   the ' character.
+; - Constant values can be inserted et the current address by:
+;   #<value in decimal>
+;   %<value in binary>
+;   $<character string>
+; - Code is compiled whenever the RUN command is typed.
+
+
+; Mekias can be (mostly) relocated thanks to a table for jumps and calls
+; This table is always located at adress 23496 when Mekias is installed.
+; In the disassembled code below, Mekias was relocated at address 40000.  
+
+; Tables of mnemonic start at 41560. Each table ends with a ! character.
+
+; Addresses of relevant variables:
+; 23296 buffer (17 chars) containing the line to be parsed.
+; 23344 number of digits in number.
+; 23345 pointer to current op-code to be written (eq. to PC)
+; 23352 =1 if ORG defined.
+; 23356 =255 if label being read, 0 otherwise.
+; 23484 table of registers for BIT instructions.
+; 23350 label pointer.
+
+; Error messages start at 41400. Codes:
+; 99 ORG missing.
+; 110 Invalid number.
+; 125 Label too long.
+; 141 Line too long.
+; 159 Invalid mnemonic.
+; 173 Label not defined.
+;
+
+; MEKIAS CODE STARTS HERE
+; 
+
+; Table used for code relocation (case of relocation of main code at 40000)
+
+        23496  c3 40 9c     JP 40000 ; multiplication
+        23499  c3 4b 9c     JP 40011 ; string-to-number conversion 
+        23502  c3 fd a0     JP 41213 ; BASIC-line analysis 
+        23505  c3 97 9c     JP 40087 ; constant string storage 
+        23508  c3 b1 9c     JP 40113 ; constant decimal number storage 
+        23511  c3 d5 9c     JP 40149 ; constant binary number storage 
+        23514  c3 0d 9d     JP 40205 ; error message display 
+        23517  c3 38 9d     JP 40248 ; BIT/RES/SET parsing 
+        23520  c3 76 9d     JP 40310 ; label-definition parsing 
+        23523  c3 d0 9d     JP 40400 ; mnemonic-table search 
+        23526  c3 0b 9      JP 40459 ; line buffer parsing
+        23529  c3 f4 9f     JP 40948 ; label resolution 
+        23532  c3 08 a0     JP 40968 ; a008 eq 40678
+
+; Routine to multiply number in BC by digit (ASCII char) indexed by DE
+; return result in HL
+
+        40000  1a           LD A,(DE)
+        40001  d6 30        SUB 48 ; convert ASCII to number (<10)
+        40003  28 04        JR Z,4 LBL0
+LBL1    40005  09           ADD HL,BC
+        40006  3d           DEC A
+        40007  20 fc        JR NZ,252 LBL1
+LBL0    40009  13           INC DE
+        40010  c9           RET
+
+; Routine to convert to number string addresed by DE corresponding to number
+; (decimal) set carry flag if conversion OK and return result in HL
+
+        40011  d5           PUSH DE
+        40012  0e 00        LD C,0 ; count number of digits
+LBL3    40014  1a           LD A,(DE) ; return it in C
+        40015  d6 30        SUB 48
+        40017  fe 0a        CP 10
+        40019  30 04        JR NC,4 LBL2
+        40021  0c           INC C
+        40022  13           INC DE
+        40023  18 f5        JR 245 LBL3
+LBL2    40025  79           LD A,C
+        40026  32 30 5b     LD (23344),A ; store number of digits
+        40029  d1           POP DE
+        40030  21 00 00     LD HL,0
+        40033  fe 05        CP 5
+        40035  28 12        JR Z,18 LBL4
+        40037  fe 04        CP 4
+        40039  28 14        JR Z,20 LBL5
+        40041  fe 03        CP 3
+        40043  28 16        JR Z,22 LBL6
+        40045  fe 02        CP 2
+        40047  28 18        JR Z,24 LBL7
+        40049  fe 01        CP 1
+        40051  28 1a        JR Z,26 LBL8
+        40053  a7           AND A
+        40054  c9           RET
+LBL4    40055  01 10 27     LD BC,10000 ; number >=10000
+        40058  cd c8 5b     CALL 23496 ;  get HL=1st digit*10000
+LBL5    40061  01 e8 03     LD BC,1000 ; same for the following digits \
+        40064  cd c8 5b     CALL 23496 ; (cumulating into HL)
+LBL6    40067  01 64 00     LD BC,100
+        40070  cd c8 5b     CALL 23496
+LBL7    40073  01 0a 00     LD BC,10
+        40076  cd c8 5b     CALL 23496
+LBL8    40079  01 01 00     LD BC,1
+        40082  cd c8 5b     CALL 23496
+        40085  37           SCF
+        40086  c9           RET ; return number in HL
+
+; Routine to store a constant string at current compiled-code pointer (eq to PC)
+; '.' are replaced by space characters (since space characters are not copied 
+; into the line buffer 
+
+        40087  11 01 5b     LD DE,23297 ; start at 2nd character in buffer
+        40090  2a 31 5b     LD HL,(23345) ; 23345=address of PC
+LBL10   40093  1a           LD A,(DE)
+        40094  fe 00        CP 0       ; check of end of line reached \
+        40096  ca ce 5b     JP Z,23502 ; if so, analyze next line
+        40099  fe 2e        CP 46 ; if ., replace by space
+        40101  20 02        JR NZ,2 LBL9
+        40103  3e 20        LD A,32
+LBL9    40105  77           LD (HL),A
+        40106  13           INC DE
+        40107  23           INC HL
+        40108  22 31 5b     LD (23345),HL
+        40111  18 ec        JR 236 LBL10
+
+; Routine to store a constant number (given in decimal as a string) at
+; current compiled code pointer (eq to PC) 
+
+        40113  11 01 5b     LD DE,23297 ; start at 2nd char in buffer
+        40116  cd cb 5b     CALL 23499 ; convert string into number
+        40119  38 05        JR C,5 LBL11
+        40121  2e 6e        LD L,110 ; err code = invalid number
+        40123  c3 da 5b     JP 23514 ; display error message
+LBL11   40126  eb           EX DE,HL
+        40127  2a 31 5b     LD HL,(23345)
+        40130  73           LD (HL),E
+        40131  23           INC HL
+        40132  22 31 5b     LD (23345),HL
+        40135  7a           LD A,D
+        40136  fe 00        CP 0
+        40138  ca ce 5b     JP Z,23502
+        40141  72           LD (HL),D ; store most significant byte
+        40142  23           INC HL ; (if number > 255)
+        40143  22 31 5b     LD (23345),HL
+        40146  c3 ce 5b     JP 23502 ; analyze next line
+
+; Routine to store a constant number (given in binary as a string) at
+; current compiled code pointer (eq to PC)
+; since binary is useful to define graphic characters or sprites,
+; the '0' can be represented by '.' in Mekias assembler
+
+        40149  11 10 5b     LD DE,23312 ; search for the end of the line
+LBL13   40152  1a           LD A,(DE) ; in the buffer
+        40153  fe 00        CP 0
+        40155  20 03        JR NZ,3 LBL12
+        40157  1b           DEC DE
+        40158  18 f8        JR 248 LBL13
+LBL12   40160  21 00 00     LD HL,0
+        40163  01 01 00     LD BC,1
+LBL15   40166  1a           LD A,(DE) ; convert string representing binary \
+        40167  fe 31        CP 49 ;     into number from right to left
+        40169  20 01        JR NZ,1 LBL14 ; 49 = ASCII code of 1
+        40171  09           ADD HL,BC
+LBL14   40172  1b           DEC DE ; go to character on the left
+        40173  cb 21        SLA C ; multiply BC by 2
+        40175  cb 10        RL B
+        40177  7b           LD A,E
+        40178  fe 00        CP 0 ; E=0 => beginning of line buffer reached
+        40180  20 f0        JR NZ,240 LBL15
+        40182  eb           EX DE,HL
+        40183  2a 31 5b     LD HL,(23345) ; store number at PC
+        40186  73           LD (HL),E
+        40187  23           INC HL
+        40188  22 31 5b     LD (23345),HL
+        40191  7a           LD A,D
+        40192  fe 00        CP 0       ; if number to store < 256 \
+        40194  ca ce 5b     JP Z,23502 ; go to analyze next line
+        40197  72           LD (HL),D ; store most significant byte if num>255
+        40198  23           INC HL
+        40199  22 31 5b     LD (23345),HL
+        40202  c3 ce 5b     JP 23502 ; analyze next BASIC line
+
+; Routine to display error message at the bottom of screen
+; HL=address of message buffer
+
+        40205  e5           PUSH HL
+        40206  3e 02        LD A,2
+        40208  cd 01 16     CALL 5633 ; open channel 2= bottom screen
+        40211  cd 6b 0d     CALL 3435 ; do a CLS
+        40214  e1           POP HL
+        40215  26 5b        LD H,91
+LBL17   40217  23           INC HL
+        40218  7e           LD A,(HL)
+        40219  fe 0d        CP 13
+        40221  28 03        JR Z,3 LBL16
+        40223  d7           RST 10H ; print character (=A register)
+        40224  18 f7        JR 247 LBL17
+LBL16   40226  3e 20        LD A,32
+        40228  d7           RST 10H
+        40229  3e 3a        LD A,58
+        40231  d7           RST 10H
+        40232  21 33 5b     LD HL,23347 ; pointer to current BASIC line-number \
+        40235  cd 28 1a     CALL 6696   ; to display after msg
+        40238  21 00 03     LD HL,768
+        40241  11 64 01     LD DE,356
+        40244  cd b5 03     CALL 949 ; emit beep
+        40247  c9           RET
+
+; Routine to parse the BIT, RES and SET instr.  (syntax= BIT <bit>,<register>)
+
+        40248  3a 03 5b     LD A,(23299)
+        40251  d6 30        SUB 48
+        40253  fe 0a        CP 10
+        40255  38 05        JR C,5 LBL18
+        40257  2e 6e        LD L,110 ; err code = invalid number
+        40259  c3 da 5b     JP 23514 ; display error message 
+LBL18   40262  a7           AND A
+        40263  17           RLA
+        40264  17           RLA
+        40265  17           RLA
+        40266  80           ADD A,B
+        40267  47           LD B,A
+        40268  3a 05 5b     LD A,(23301)
+        40271  4f           LD C,A
+        40272  26 00        LD H,0
+        40274  11 bc 5b     LD DE,23484 ; search for register
+LBL20   40277  1a           LD A,(DE)
+        40278  b9           CP C
+        40279  28 0c        JR Z,12 LBL19
+        40281  24           INC H
+        40282  13           INC DE
+        40283  7c           LD A,H
+        40284  fe 09        CP 9
+        40286  20 f5        JR NZ,245 LBL20
+        40288  2e 9f        LD L,159 ; err code = unknown mnemonic
+        40290  c3 da 5b     JP 23514 ; display error message
+LBL19   40293  78           LD A,B
+        40294  84           ADD A,H
+        40295  4f           LD C,A
+        40296  2a 31 5b     LD HL,(23345) ; store op-code of BIT/RES/SET 
+        40299  36 cb        LD (HL),203
+        40301  23           INC HL
+        40302  71           LD (HL),C
+        40303  23           INC HL
+        40304  22 31 5b     LD (23345),HL
+        40307  c3 ce 5b     JP 23502 ; analyze next BASIC line
+
+; Routine to parse label
+; note: instead of the current code address, it is possible to assign a fixed
+; value to a label by writing in Mekias assembler:
+; *<label>*=<value in decimal>
+; label table has the format:
+
+; 1 byte: prefix (=2)
+; 2 bytes: address (or value) of label
+; 1 byte: length of label (=n)
+; n bytes: label name
+
+        40310  11 01 5b     LD DE,23297
+        40313  2a 36 5b     LD HL,(23350)
+        40316  23           INC HL ; jump 4 bytes to get to label name 
+        40317  23           INC HL
+        40318  23           INC HL
+        40319  23           INC HL
+        40320  06 00        LD B,0
+LBL22   40322  1a           LD A,(DE)
+        40323  fe 2a        CP 42 ; =* (end of label)
+        40325  28 0e        JR Z,14 LBL21
+        40327  77           LD (HL),A ; copy label into label table
+        40328  23           INC HL
+        40329  13           INC DE
+        40330  04           INC B
+        40331  7b           LD A,E
+        40332  fe 0b        CP 11 ; check maximum length
+        40334  20 f2        JR NZ,242 LBL22
+        40336  2e 7d        LD L,125 ; err code = label too long
+        40338  c3 da 5b     JP 23514 ; display error message 
+LBL21   40341  2a 36 5b     LD HL,(23350) ; 23350 = pointer to label table
+        40344  23           INC HL
+        40345  23           INC HL
+        40346  23           INC HL
+        40347  70           LD (HL),B ; store label length
+        40348  13           INC DE
+        40349  1a           LD A,(DE)
+        40350  fe 3d        CP 61 ; = equal sign
+        40352  20 14        JR NZ,20 LBL23
+        40354  13           INC DE ; label has to be set with given value
+        40355  e5           PUSH HL
+        40356  cd cb 5b     CALL 23499 ; convert string to number
+        40359  38 06        JR C,6 LBL24
+        40361  e1           POP HL
+        40362  2e 6e        LD L,110 ; err code = invalid number
+        40364  c3 da 5b     JP 23514 ; display error message 
+LBL24   40367  54           LD D,H
+        40368  5d           LD E,L
+        40369  e1           POP HL
+        40370  3e 01        LD A,1
+        40372  18 06        JR 6 LBL25
+LBL23   40374  ed 5b 31 5b  LD DE,(23345) ; store current compiled-code \
+        40378  3e 02        LD A,2 ; pointer into label table
+LBL25   40380  2b           DEC HL
+        40381  72           LD (HL),D
+        40382  2b           DEC HL
+        40383  73           LD (HL),E
+        40384  2b           DEC HL
+        40385  77           LD (HL),A
+        40386  23           INC HL
+        40387  23           INC HL
+        40388  23           INC HL
+        40389  5e           LD E,(HL)
+        40390  16 00        LD D,0
+        40392  19           ADD HL,DE ; update pointer of label table
+        40393  23           INC HL
+        40394  22 36 5b     LD (23350),HL
+        40397  c3 ce 5b     JP 23502 ; analyze next BASIC line
+
+; Routine to search for mnemonic corresponding to the one in the line buffer
+
+        40400  3e 00        LD A,0 ; starts at op-code=0 (NOP)
+        40402  32 35 5b     LD (23349),A
+LBL31   40405  21 10 5b     LD HL,23312 ; clear 15-char buffer @23312
+        40408  06 0f        LD B,15
+LBL26   40410  36 00        LD (HL),0
+        40412  23           INC HL
+        40413  10 fb        DJNZ 251 LBL26
+        40415  21 10 5b     LD HL,23312 ; copy into buffer @23312 \
+LBL28   40418  1a           LD A,(DE) ; buffer indexed by DE until \
+        40419  fe 20        CP 32 ; space character read
+        40421  28 05        JR Z,5 LBL27
+        40423  77           LD (HL),A
+        40424  13           INC DE
+        40425  23           INC HL
+        40426  18 f6        JR 246 LBL28
+LBL27   40428  13           INC DE
+        40429  d5           PUSH DE
+        40430  11 00 5b     LD DE,23296 ; compare line buffer with content \
+        40433  21 10 5b     LD HL,23312 ; of buffer @23212
+        40436  06 0f        LD B,15
+LBL30   40438  1a           LD A,(DE)
+        40439  be           CP (HL) ; compare characters
+        40440  20 06        JR NZ,6 LBL29 ; match failed 
+        40442  13           INC DE
+        40443  23           INC HL
+        40444  10 f8        DJNZ 248 LBL30 ; test next character
+        40446  d1           POP DE
+        40447  c9           RET ; match => return with DE=address
+LBL29   40448  d1           POP DE
+        40449  1a           LD A,(DE)
+        40450  fe 21        CP 33 ; 33 = ! (marks end of mnemonic table)
+        40452  c8           RET Z ; return (mnemonic not found)
+        40453  21 35 5b     LD HL,23349
+        40456  34           INC (HL) ; increase op-code (stored in 23349)
+        40457  18 ca        JR 202 LBL31 ; try next mnemonic
+
+; Parse line buffer containing Mekias assembler code
+
+        40459  3a 00 5b     LD A,(23296) ; test 1st character in line buffer
+        40462  fe 7b        CP 123 ; ={ (beginning of code= ORG prefix)
+        40464  20 1b        JR NZ,27 LBL32
+        40466  3e 01        LD A,1
+        40468  32 38 5b     LD (23352),A ; set ORG defined
+        40471  11 01 5b     LD DE,23297
+        40474  cd cb 5b     CALL 23499 ; parse ORG value (after {)
+        40477  38 05        JR C,5 LBL33
+        40479  2e 6e        LD L,110 ; err code = invalid value
+        40481  c3 da 5b     JP 23514 ; eq 39995 (error msg)
+LBL33   40484  22 31 5b     LD (23345),HL
+        40487  22 39 5b     LD (23353),HL
+        40490  c3 ce 5b     JP 23502 ; analyze next BASIC line
+LBL32   40493  3a 38 5b     LD A,(23352) ; check if ORG defined
+        40496  fe 00        CP 0
+        40498  20 05        JR NZ,5 LBL34
+        40500  2e 63        LD L,99 ; err code = ORG not defined
+        40502  c3 da 5b     JP 23514 ; display error message
+LBL34   40505  3a 00 5b     LD A,(23296)
+        40508  fe 24        CP 36 ; =$
+        40510  ca d1 5b     JP Z,23505 ; parse constant string
+        40513  fe 23        CP 35 ; =#
+        40515  ca d4 5b     JP Z,23508 ; parse constant number (decimal)
+        40518  fe 25        CP 37 ;=%
+        40520  ca d7 5b     JP Z,23511 ; parse constant number (binary)
+        40523  fe 2a        CP 42 ; =*
+        40525  ca e0 5b     JP Z,23520 ; parse label
+        40528  fe 42        CP 66 ; =B
+        40530  20 05        JR NZ,5 LBL35
+        40532  06 40        LD B,64
+        40534  c3 dd 5b     JP 23517 ; parse BIT cmd (only one starting with B)
+LBL35   40537  fe 52        CP 82 ; =R
+        40539  20 13        JR NZ,19 LBL36
+        40541  3a 01 5b     LD A,(23297) ; test 2nd character in line buffer
+        40544  fe 45        CP 69 ; =E
+        40546  20 0c        JR NZ,12 LBL37
+        40548  3a 02 5b     LD A,(23298) ; test 3rd character in line buffer
+        40551  fe 53        CP 83 ; =S
+        40553  20 05        JR NZ,5 LBL38
+        40555  06 80        LD B,128
+        40557  c3 dd 5b     JP 23517 ; parse RES cmd
+LBL38   40560  3a 00 5b     LD A,(23296)
+        40563  fe 53        CP 83 ; =S
+        40565  20 0c        JR NZ,12 LBL39
+        40567  3a 01 5b     LD A,(23297)
+        40570  fe 45        CP 69 ; =E
+        40572  20 05        JR NZ,5 LBL40
+        40574  06 c0        LD B,192
+        40576  c3 dd 5b     JP 23517 ; parse SET cmd (only one starting with SE)
+LBL40   40579  3a 00 5b     LD A,(23296)
+        40582  fe 3b        CP 59 ; =;
+        40584  ca ce 5b     JP Z,23502 ; line is comment => analyze next line
+        40587  3a 00 5b     LD A,(23296)
+        40590  fe 52        CP 82 ; =R
+        40592  20 22        JR NZ,34 LBL41
+        40594  3a 01 5b     LD A,(23297)
+        40597  fe 53        CP 83; =S
+        40599  20 1b        JR NZ,27 LBL42
+        40601  11 03 5b     LD DE,23299 ; RST instruction found 
+        40604  cd cb 5b     CALL 23499 ; convert into number arg of RST
+        40607  38 05        JR C,5 LBL43
+        40609  2e 6e        LD L,110 ; err code = invalid number
+        40611  c3 da 5b     JP 23514 ; display error message
+LBL43   40614  3e c7        LD A,199 ; calculate op-code of RST
+        40616  85           ADD A,L
+        40617  2a 31 5b     LD HL,(23345) ; store op-code and update PC
+        40620  77           LD (HL),A
+        40621  23           INC HL
+        40622  22 31 5b     LD (23345),HL
+        40625  c3 ce 5b     JP 23502 ; analyze next line
+LBL42   40628  3a 00 5b     LD A,(23296)
+        40631  fe 4e        CP 78 ; =N
+        40633  20 13        JR NZ,19 LBL44
+        40635  3a 01 5b     LD A,(23297)
+        40638  fe 4f        CP 79 ; =O
+        40640  20 0c        JR NZ,12 LBL45
+        40642  2a 31 5b     LD HL,(23345)
+        40645  36 00        LD (HL),0 ; store NOP op-code and update PC
+        40647  23           INC HL
+        40648  22 31 5b     LD (23345),HL
+        40651  c3 ce 5b     JP 23502
+LBL45   40654  11 00 5b     LD DE,23296 ; extract mnemonic and label
+        40657  01 20 5b     LD BC,23328
+        40660  21 00 5b     LD HL,23296
+LBL51   40663  1a           LD A,(DE)
+        40664  fe 2a        CP 42 ; =*
+        40666  20 0e        JR NZ,14 LBL46
+        40668  13           INC DE
+        40669  3a 3c 5b     LD A,(23356) ; invert @23356
+        40672  ee ff        XOR 255 ; (toggle "label being read" flag)
+        40674  32 3c 5b     LD (23356),A
+        40677  3e 01        LD A,1
+        40679  32 3b 5b     LD (23355),A ; type arg=1 (label)
+LBL46   40682  3a 3c 5b     LD A,(23356)
+        40685  fe 00        CP 0
+        40687  28 0e        JR Z,14 LBL47
+        40689  1a           LD A,(DE) ; if @23256, label is being read
+        40690  02           LD (BC),A ; (store label at 23328)
+        40691  13           INC DE
+        40692  03           INC BC
+        40693  79           LD A,C
+        40694  fe 27        CP 39 ; BC=23335 => end of label buffer reached
+        40696  20 dd        JR NZ,221 LBL48
+        40698  2e 7d        LD L,125 ; code err = label too long
+        40700  c3 da 5b     JP 23514 ; display error message
+LBL47   40703  1a           LD A,(DE)
+        40704  d6 30        SUB 48
+        40706  fe 0a        CP 10
+        40708  30 16        JR NC,22 LBL49
+        40710  e5           PUSH HL
+        40711  d5           PUSH DE
+        40712  cd cb 5b     CALL 23499 ; number encountered => convert
+        40715  d1           POP DE
+        40716  22 20 5b     LD (23328),HL ; store arg of mnemonic
+        40719  e1           POP HL
+        40720  3e 02        LD A,2
+        40722  32 3b 5b     LD (23355),A ; type arg=2 (number)
+        40725  3a 30 5b     LD A,(23344) ; get number of digits
+        40728  83           ADD A,E ; update pointer to buffer accordingly
+        40729  5f           LD E,A
+        40730  18 04        JR 4 LBL50
+LBL49   40732  1a           LD A,(DE) ; copy chars of mnemonic in buffer \
+        40733  77           LD (HL),A ; (numbers and labels stripped)
+        40734  23           INC HL
+        40735  13           INC DE
+LBL50   40736  7b           LD A,E
+        40737  fe 20        CP 32
+        40739  20 b2        JR NZ,178 LBL51 ; go to next char in line buffer
+        40741  11 58 a2     LD DE,41560 ; beginning of mnemonic table
+        40744  cd e3 5b     CALL 23523 ; search for mnemonic
+        40747  1a           LD A,(DE)
+        40748  fe 21        CP 33; =! (end of mnemonic table reached)
+        40750  20 0e        JR NZ,14 LBL52
+        40752  13           INC DE
+        40753  cd e3 5b     CALL 23523 ; search for mnemomic in 2nd table \
+        40756  1a           LD A,(DE) ; (op-codes with CB or ED prefixes)
+        40757  fe 21        CP 33; =! (end of mnemonic table reached)
+        40759  20 2e        JR NZ,46 LBL53
+        40761  2e 9f        LD L,159 ; unknown mnemonic
+        40763  c3 da 5b     JP 23514 ; eq 39995 (error msg)
+LBL52   40766  3a 35 5b     LD A,(23349) ; get op-code found
+        40769  2a 31 5b     LD HL,(23345) ; store op-code at PC
+        40772  77           LD (HL),A
+        40773  23           INC HL
+        40774  22 31 5b     LD (23345),HL ; update PC
+        40777  21 4a 5b     LD HL,23370
+        40780  06 19        LD B,25
+LBL55   40782  be           CP (HL)
+        40783  28 05        JR Z,5 LBL54
+        40785  23           INC HL
+        40786  10 fa        DJNZ 250 LBL55
+        40788  18 2d        JR 45 LBL56
+LBL54   40790  3a 35 5b     LD A,(23349)
+        40793  e6 07        AND 7
+        40795  20 05        JR NZ,5 LBL57
+        40797  01 01 04     LD BC,1025
+        40800  18 03        JR 3 LBL58
+LBL57   40802  01 01 05     LD BC,1281
+LBL58   40805  18 1f        JR 31 LBL59
+LBL53   40807  2a 31 5b     LD HL,(23345)
+        40810  3a 35 5b     LD A,(23349)
+        40813  fe 3f        CP 63
+        40815  38 0a        JR C,10 LBL60
+        40817  36 ed        LD (HL),237 ; store ED prefix
+        40819  fe 7c        CP 124
+        40821  38 02        JR C,2 LBL61
+        40823  c6 23        ADD A,35
+LBL61   40825  18 02        JR 2 LBL62
+LBL60   40827  36 cb        LD (HL),203 ; store CB prefix
+LBL62   40829  23           INC HL
+        40830  77           LD (HL),A
+        40831  23           INC HL
+        40832  22 31 5b     LD (23345),HL
+LBL56   40835  01 02 03     LD BC,770
+LBL59   40838  3a 3b 5b     LD A,(23355)
+        40841  fe 00        CP 0
+        40843  ca ce 5b     JP Z,23502
+        40846  fe 01        CP 1
+        40848  28 28        JR Z,40 LBL63
+        40850  2a 31 5b     LD HL,(23345)
+        40853  3a 20 5b     LD A,(23328)
+        40856  77           LD (HL),A
+        40857  23           INC HL
+        40858  22 31 5b     LD (23345),HL
+        40861  79           LD A,C
+        40862  fe 01        CP 1
+        40864  20 0d        JR NZ,13 LBL64
+        40866  3a 21 5b     LD A,(23329)
+        40869  fe 00        CP 0
+        40871  ca ce 5b     JP Z,23502
+        40874  2e 6e        LD L,110 ; err code = invalid number
+        40876  c3 da 5b     JP 23514 ; display error message
+LBL64   40879  3a 21 5b     LD A,(23329)
+        40882  77           LD (HL),A
+        40883  23           INC HL
+        40884  22 31 5b     LD (23345),HL
+        40887  c3 ce 5b     JP 23502
+LBL63   40890  2a 36 5b     LD HL,(23350)
+        40893  70           LD (HL),B
+        40894  23           INC HL
+        40895  3a 31 5b     LD A,(23345)
+        40898  77           LD (HL),A
+        40899  23           INC HL
+        40900  3a 32 5b     LD A,(23346)
+        40903  77           LD (HL),A
+        40904  23           INC HL
+        40905  22 3d 5b     LD (23357),HL
+        40908  23           INC HL
+        40909  06 00        LD B,0
+        40911  11 20 5b     LD DE,23328
+LBL66   40914  1a           LD A,(DE)
+        40915  fe 00        CP 0
+        40917  28 06        JR Z,6 LBL65
+        40919  77           LD (HL),A
+        40920  13           INC DE
+        40921  23           INC HL
+        40922  04           INC B
+        40923  18 f5        JR 245 LBL66
+LBL65   40925  22 36 5b     LD (23350),HL
+        40928  2a 3d 5b     LD HL,(23357)
+        40931  70           LD (HL),B
+        40932  2a 31 5b     LD HL,(23345)
+        40935  23           INC HL
+        40936  79           LD A,C
+        40937  fe 01        CP 1
+        40939  28 01        JR Z,1 LBL67
+        40941  23           INC HL
+LBL67   40942  22 31 5b     LD (23345),HL
+        40945  c3 ce 5b     JP 23502 ; analyze next BASIC line
+
+; Routine to resolve the labels
+
+        40948  2a 3f 5b     LD HL,(23359)
+        40951  ed 4b 36 5b  LD BC,(23350)
+        40955  16 00        LD D,0
+LBL72   40957  7e           LD A,(HL)
+        40958  fe 01        CP 1
+        40960  28 06        JR Z,6 LBL69
+        40962  fe 02        CP 2
+        40964  28 02        JR Z,2 LBL69
+        40966  18 0f        JR 15 LBL70
+LBL69   40968  23           INC HL
+        40969  23           INC HL
+        40970  23           INC HL
+        40971  5e           LD E,(HL)
+        40972  19           ADD HL,DE
+        40973  23           INC HL
+        40974  7c           LD A,H
+        40975  b8           CP B
+        40976  20 eb        JR NZ,235 LBL71
+        40978  7d           LD A,L
+        40979  b9           CP C
+        40980  20 e7        JR NZ,231 LBL72
+        40982  c9           RET
+LBL70   40983  22 41 5b     LD (23361),HL
+        40986  23           INC HL
+        40987  23           INC HL
+        40988  23           INC HL
+        40989  7e           LD A,(HL)
+        40990  32 43 5b     LD (23363),A
+        40993  2a 3f 5b     LD HL,(23359)
+LBL79   40996  ed 4b 36 5b  LD BC,(23350)
+        41000  7e           LD A,(HL)
+        41001  fe 01        CP 1
+        41003  28 04        JR Z,4 LBL73
+        41005  fe 02        CP 2
+        41007  20 1c        JR NZ,28 LBL74
+LBL73   41009  22 44 5b     LD (23364),HL  ; save current position in \
+        41012  23           INC HL         ; defined-label table
+        41013  23           INC HL
+        41014  23           INC HL
+        41015  ed 5b 41 5b  LD DE,(23361)
+        41019  13           INC DE
+        41020  13           INC DE
+        41021  13           INC DE
+        41022  46           LD B,(HL)
+        41023  04           INC B
+LBL76   41024  1a           LD A,(DE)
+        41025  be           CP (HL)
+        41026  20 06        JR NZ,6 LBL75
+        41028  13           INC DE
+        41029  23           INC HL
+        41030  10 f8        DJNZ 248 LBL76
+        41032  18 18        JR 24 LBL77
+LBL75   41034  2a 44 5b     LD HL,(23364)
+LBL74   41037  23           INC HL
+        41038  23           INC HL
+        41039  23           INC HL
+        41040  16 00        LD D,0
+        41042  5e           LD E,(HL)
+        41043  19           ADD HL,DE
+        41044  23           INC HL
+        41045  7c           LD A,H           ; check if HL=BC \
+        41046  b8           CP B             ; if yes, end of defined-label \ 
+        41047  20 cb        JR NZ,203 LBL79  ; table reached
+        41049  7d           LD A,L
+        41050  b9           CP C
+        41051  20 c7        JR NZ,199 LBL79
+        41053  2e ad        LD L,173 ; err code = unknown label
+        41055  c3 da 5b     JP 23514 ; display error message
+LBL77   41058  ed 5b 44 5b  LD DE,(23364)
+        41062  2a 41 5b     LD HL,(23361)
+        41065  7e           LD A,(HL)
+        41066  fe 03        CP 3
+        41068  28 22        JR Z,34 LBL80
+        41070  fe 04        CP 4
+        41072  28 35        JR Z,53 LBL81
+        41074  23           INC HL
+        41075  4e           LD C,(HL)
+        41076  23           INC HL
+        41077  46           LD B,(HL)
+        41078  13           INC DE
+        41079  1a           LD A,(DE)
+        41080  02           LD (BC),A
+        41081  13           INC DE
+        41082  1a           LD A,(DE)
+        41083  fe 00        CP 0
+        41085  28 05        JR Z,5 LBL82
+        41087  2e 6e        LD L,110 ; err code = invalid number
+        41089  c3 da 5b     JP 23514 ; display error message
+LBL82   41092  2a 41 5b     LD HL,(23361)
+        41095  ed 4b 36 5b  LD BC,(23350)
+        41099  16 00        LD D,0
+        41101  c3 ec 5b     JP 23532
+LBL80   41104  23           INC HL
+        41105  4e           LD C,(HL)
+        41106  23           INC HL
+        41107  46           LD B,(HL)
+        41108  13           INC DE
+        41109  1a           LD A,(DE)
+        41110  02           LD (BC),A
+        41111  13           INC DE
+        41112  03           INC BC
+        41113  1a           LD A,(DE)
+        41114  02           LD (BC),A
+        41115  2a 41 5b     LD HL,(23361)
+        41118  ed 4b 36 5b  LD BC,(23350)
+        41122  16 00        LD D,0
+        41124  c3 ec 5b     JP 23532
+LBL81   41127  23           INC HL
+        41128  4e           LD C,(HL)
+        41129  23           INC HL
+        41130  46           LD B,(HL)
+        41131  13           INC DE
+        41132  1a           LD A,(DE)
+        41133  6f           LD L,A
+        41134  13           INC DE
+        41135  1a           LD A,(DE)
+        41136  67           LD H,A
+        41137  a7           AND A     ; clear carry flag
+        41138  ed 42        SBC HL,BC ; calculate relative jump
+        41140  2b           DEC HL
+        41141  7d           LD A,L
+        41142  02           LD (BC),A
+        41143  2a 41 5b     LD HL,(23361)
+        41146  ed 4b 36 5b  LD BC,(23350)
+        41150  16 00        LD D,0
+        41152  c3 ec 5b     JP 23532
+        41155  01 ff 00     LD BC,255
+        41158  11 00 5b     LD DE,23296
+        41161  21 54 a1     LD HL,41300
+        41164  ed b0        LDIR
+
+; search for lines starting with a REM 
+
+LBL87   41166  2a 46 5b     LD HL,(23366) ; 23366=pointer on BASIC line to read
+        41169  7e           LD A,(HL)
+        41170  32 33 5b     LD (23347),A ; store LS byte of BASIC line number
+        41173  23           INC HL
+        41174  7e           LD A,(HL)
+        41175  32 34 5b     LD (23348),A ; store MS byte of BASIC line number
+        41178  23           INC HL
+        41179  5e           LD E,(HL) ; get BASIC line length
+        41180  23           INC HL
+        41181  56           LD D,(HL)
+        41182  23           INC HL
+        41183  e5           PUSH HL
+        41184  19           ADD HL,DE
+        41185  22 46 5b     LD (23366),HL ; update pointer on BASIC line to read
+        41188  e1           POP HL
+        41189  7e           LD A,(HL) ; get BASIC instruction
+        41190  fe ea        CP 234 ; = REM
+        41192  20 e4        JR NZ,228 LBL87 ; go to next line
+        41194  23           INC HL
+LBL88   41195  11 00 5b     LD DE,23296 ; buffer to where the line will be \
+LBL91   41198  7e           LD A,(HL) ; copied (space chars omitted)
+        41199  fe 27        CP 39 ; =' (prefix for Mekias comments) \
+        41201  28 04        JR Z,4 LBL84 ; => ignore chars after
+        41203  fe 0d        CP 13 ; = ENTER (end of line)
+        41205  20 1f        JR NZ,31 LBL85
+LBL84   41207  22 44 5b     LD (23364),HL ; save pointer on BASIC code
+        41210  c3 e6 5b     JP 23526 ; parse line buffer
+
+; Analysis of line in BASIC starts here
+
+        41213  06 2f        LD B,47 ; clear line buffer (length=47 chars)
+        41215  3e 00        LD A,0
+        41217  32 3b 5b     LD (23355),A
+        41220  11 00 5b     LD DE,23296
+LBL86   41223  12           LD (DE),A
+        41224  13           INC DE
+        41225  10 fc        DJNZ 252 LBL86
+        41227  2a 44 5b     LD HL,(23364) ; get pointer on BASIC code
+        41230  7e           LD A,(HL)
+        41231  fe 0d        CP 13 ; =ENTER (end of line)
+        41233  28 bb        JR Z,187 LBL87
+        41235  23           INC HL
+        41236  18 d5        JR 213 LBL88
+
+LBL85   41238  fe 20        CP 32 ; =space character (omit)
+        41240  28 06        JR Z,6 LBL89
+        41242  fe 7d        CP 125 ; =} (marks end of Mekias assembler code)
+        41244  28 0d        JR Z,13 LBL90
+        41246  12           LD (DE),A ; copy line of BASIC into buffer
+        41247  13           INC DE
+LBL89   41248  23           INC HL
+        41249  7b           LD A,E
+        41250  fe 20        CP 32 ; max=32 char
+        41252  20 c8        JR NZ,200 LBL91
+        41254  2e 8d        LD L,141 ; err code = line too long
+        41256  c3 da 5b     JP 23514 ; display error message
+
+; End-of-compilation routines
+
+LBL90   41259  2a 3f 5b     LD HL,(23359) ;= label-in-mnemonic table
+        41262  ed 5b 36 5b  LD DE,(23350) ;= label-defined table
+        41266  7c           LD A,H
+        41267  ba           CP D
+        41268  20 04        JR NZ,4 LBL92 ; 
+        41270  7d           LD A,L
+        41271  bb           CP E
+        41272  28 03        JR Z,3 LBL93
+LBL92   41274  cd e9 5b     CALL 23529 ; if (DE)!=(HL), resolve labels
+LBL93   41277  00           NOP ; zone reserved for future use ?
+        41278  00           NOP
+        41279  00           NOP
+        41280  00           NOP
+        41281  00           NOP
+        41282  00           NOP
+        41283  00           NOP
+        41284  00           NOP
+        41285  00           NOP
+        41286  00           NOP
+        41287  00           NOP
+        41288  21 00 03     LD HL,768 ; emit beep
+        41291  11 64 00     LD DE,100
+        41294  cd b5 03     CALL 949
+        41297  c9           RET ; end of compilation
+
