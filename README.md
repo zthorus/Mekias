@@ -12,5 +12,5 @@ is I spent time developing a tool that I have never used actually...
 A quick Mekias manual:
 * The assembly program must start with the character { followed by the address (ORG) of the program in decimal.
 * The assembly program ends with the character } . 
-* All numerical arguments od instructions are in decimal (because I hated hexadecimal).
+* All numerical arguments of instructions are in decimal (because I hated hexadecimal).
 More details are in the attached notes.
