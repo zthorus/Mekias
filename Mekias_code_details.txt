@@ -17,14 +17,20 @@
 ;   *<label>* 
 ; - Labels can be assigned a value that is not the current address:
 ;   *<label>*=<value in decimal>
-; - Comments can be appended to a line of Mekias code. They shall start with
-;   the ' character.
+; - Comments can normally be appended to a line of Mekias code. They are supposed to start with
+;   the ' character. However, I recently (2026) found a (good !) bug: the ' character cannot
+;   be used as a prefic for comments, but acts as a mnemonic separator, which is actually
+;   very convenient to have a sequence of mnemonics in the same REM line (to avoid very long
+;   listings that are difficult to read with the 22-line editor of the Spectrum !).
 ; - Constant values can be inserted et the current address by:
 ;   #<value in decimal>
 ;   %<value in binary>
 ;   $<character string>
 ; - Code is compiled whenever the RUN command is typed.
-
+; - Space characters in mnemonics are optional and are ignore (you can write LDA,(DE) or
+    LD A,(DE)).
+; - The Z80 instructions using the IX and IY registers (prefixed by xDD and xFD) are not 
+    implemented.    
 
 ; Mekias can be (mostly) relocated thanks to a table for jumps and calls
 ; This table is always located at adress 23496 when Mekias is installed.
@@ -35,9 +41,12 @@
 ; Addresses of relevant variables:
 ; 23296 buffer (17 chars) containing the line to be parsed.
 ; 23344 number of digits in number.
-; 23345 pointer to current op-code to be written (eq. to PC)
+; 23345 pointer to current op-code to be written (eq. to PC), 2 bytes.
+; 23347 currently-parsed BASIC line number, 2 bytes.
 ; 23352 =1 if ORG defined.
 ; 23356 =255 if label being read, 0 otherwise.
+: 23364 pointer to BASIC source code, 2 bytes
+; 23366 other pointer to BASIC source code, 2 bytes
 ; 23484 table of registers for BIT instructions.
 ; 23350 label pointer.
 
@@ -268,7 +277,7 @@ LBL19   40293  78           LD A,B
 ; *<label>*=<value in decimal>
 ; label table has the format:
 
-; 1 byte: prefix (=2)
+; 1 byte: prefix (1=defined constant, 2= current address)
 ; 2 bytes: address (or value) of label
 ; 1 byte: length of label (=n)
 ; n bytes: label name
