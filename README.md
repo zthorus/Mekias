@@ -10,8 +10,10 @@ It is still incomplete, some of the parts have not been analyzed yet. The sad th
 Files:
 
 - Mekias_as_installed.z80: Example of assembly code within Basic REM lines, with Mekias installed in RAM. Typing RUN automatically triggers the
-                         compilation of the assembly code (a beep is emitted when the compilation is done). Note: this is an old .z80 file format, which seems not compatible with
+                         compilation of the assembly code (a beep is emitted when the compilation is done with no error). Note: this is an old .z80 file format, which seems not compatible with
                          the "FUSE" Spectrum emulator.
+  
+- Mekias_as_installed.sna: Same as before in sna (snapshot) format. This one works OK on FUSE.
                          
 - 4_pix_hscroll_3.sna: Another example (4-pixel left-to-right scrolling routine).
 
